@@ -596,6 +596,9 @@ pub struct Content {
     pub menu_types: Vec<MenuType>,
     /// The namespaces it owns: the mod id, then the manifest's `namespaces`.
     pub namespaces: Vec<String>,
+    /// The vanilla items whose client item definition it replaces (the
+    /// manifest's `item_models`), each with its `assets/minecraft/items/` file.
+    pub item_models: Vec<String>,
 }
 
 /// Reads a mod's content files ([`Content::reader`]).
@@ -711,6 +714,7 @@ impl Content {
             entity_types: Vec::new(),
             menu_types: Vec::new(),
             namespaces: manifest.owned_namespaces().map(str::to_owned).collect(),
+            item_models: manifest.item_models.clone(),
         };
         content.check(manifest, declared)?;
         Ok(content)
@@ -729,6 +733,7 @@ impl Content {
             entity_types: Vec::new(),
             menu_types: Vec::new(),
             namespaces: vec![namespace.to_owned()],
+            item_models: Vec::new(),
         }
     }
 
@@ -853,10 +858,24 @@ impl Content {
             // tags and atlases, and to the convention tags mods share.
             let shared = matches!(namespace, "minecraft" | "c");
             let atlas = top == "assets" && namespace == "minecraft" && rest.starts_with("atlases/");
-            let allowed = owned || (top == "data" && shared && rest.starts_with("tags/")) || atlas;
+            let item_model = top == "assets"
+                && namespace == "minecraft"
+                && rest
+                    .strip_prefix("items/")
+                    .and_then(|p| p.strip_suffix(".json"))
+                    .is_some_and(|p| {
+                        manifest
+                            .item_models
+                            .iter()
+                            .any(|m| m.strip_prefix("minecraft:") == Some(p))
+                    });
+            let allowed = owned
+                || (top == "data" && shared && rest.starts_with("tags/"))
+                || atlas
+                || item_model;
             if !allowed {
                 return Err(format!(
-                    "{name}: a mod adds files in its own namespaces ({top}/{id}/ and those listed in namespaces), to vanilla and convention (c) tags, or to vanilla's atlases"
+                    "{name}: a mod adds files in its own namespaces ({top}/{id}/ and those listed in namespaces), to vanilla and convention (c) tags, to vanilla's atlases, or replaces the item models its manifest lists in item_models"
                 ));
             }
             if !own && top == "data" && rest.starts_with("horizon/") {
@@ -899,6 +918,16 @@ impl Content {
         // whole index, so a reader per file made loading a big mod quadratic.
         let source = self.source.clone();
         let mut reader = reader_of(&source)?;
+        for item in &manifest.item_models {
+            let path = item.strip_prefix("minecraft:").unwrap_or(item);
+            let name = format!("assets/minecraft/items/{path}.json");
+            if self.files.binary_search(&name).is_err() {
+                return Err(format!(
+                    "item_models lists {item}, but the mod has no {name}"
+                ));
+            }
+            check_item_model(&name, &reader.read(&name)?)?;
+        }
         let mut ids = BTreeSet::new();
         for (block, name) in blocks {
             let file: BlockFile =
@@ -1394,6 +1423,27 @@ fn open_zip(path: &Path) -> Result<zip::ZipArchive<std::fs::File>, String> {
     zip::ZipArchive::new(file).map_err(|e| e.to_string())
 }
 
+/// The biggest client item definition a mod may replace a vanilla one with:
+/// vanilla's own are a few KiB.
+pub const MAX_ITEM_MODEL: usize = 256 << 10;
+
+/// A replacement client item definition's shape (`ClientItem`: an object
+/// whose `model` is an object). The game decodes the whole tree when it
+/// loads the mod; serde_json's depth limit stops a nested bomb here.
+fn check_item_model(name: &str, bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() > MAX_ITEM_MODEL {
+        return Err(format!("{name} is over {} KiB", MAX_ITEM_MODEL >> 10));
+    }
+    let doc: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| format!("{name}: {e}"))?;
+    if !doc.get("model").is_some_and(serde_json::Value::is_object) {
+        return Err(format!(
+            "{name}: an item definition is an object with a model object"
+        ));
+    }
+    Ok(())
+}
+
 /// Files under `dir`, relative to `root` with `/` separators. Symbolic links
 /// are not followed: a mod folder holds its own files.
 fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, u64)>) -> Result<(), String> {
@@ -1669,6 +1719,70 @@ capabilities = ["registries"]
         let files: &[(&str, &[u8])] = &[("data/ruby/horizon/block/cable.json", cable)];
         let e = hmod("bare-tag", MANIFEST_TEXT, files).unwrap_err();
         assert!(e.contains("#namespace:path"), "{e}");
+    }
+
+    #[test]
+    fn item_models_replace_only_the_listed_vanilla_definitions() {
+        let manifest = format!("{MANIFEST_TEXT}item_models = [\"minecraft:crossbow\"]\n");
+        let definition: &[u8] =
+            br#"{"model":{"type":"minecraft:model","model":"ruby:item/crossbow"}}"#;
+        let files: &[(&str, &[u8])] = &[
+            ("assets/minecraft/items/crossbow.json", definition),
+            ("assets/ruby/models/item/crossbow.json", b"{}"),
+            ("assets/ruby/textures/item/crossbow.png", b"png"),
+        ];
+        let content = hmod("item-models", &manifest, files).unwrap();
+        assert_eq!(content.item_models, ["minecraft:crossbow"]);
+        // Without the manifest's list, the same file is outside the fence.
+        let e = hmod("item-models-unlisted", MANIFEST_TEXT, files).unwrap_err();
+        assert!(e.contains("item_models"), "{e}");
+        // One listed item, another's file.
+        let other: &[(&str, &[u8])] = &[
+            ("assets/minecraft/items/crossbow.json", definition),
+            ("assets/minecraft/items/bow.json", definition),
+        ];
+        let e = hmod("item-models-other", &manifest, other).unwrap_err();
+        assert!(e.starts_with("assets/minecraft/items/bow.json"), "{e}");
+        // Listed without a file.
+        let e = hmod("item-models-missing", &manifest, &files[1..]).unwrap_err();
+        assert!(
+            e.contains("has no assets/minecraft/items/crossbow.json"),
+            "{e}"
+        );
+        // Other vanilla assets stay vanilla's.
+        let texture: &[(&str, &[u8])] = &[
+            ("assets/minecraft/items/crossbow.json", definition),
+            (
+                "assets/minecraft/textures/item/crossbow_standby.png",
+                b"png",
+            ),
+        ];
+        assert!(hmod("item-models-texture", &manifest, texture).is_err());
+    }
+
+    #[test]
+    fn a_malformed_item_model_is_refused() {
+        let manifest = format!("{MANIFEST_TEXT}item_models = [\"minecraft:bow\"]\n");
+        let load = |name: &str, bytes: &[u8]| {
+            hmod(
+                name,
+                &manifest,
+                &[("assets/minecraft/items/bow.json", bytes)],
+            )
+            .unwrap_err()
+        };
+        let e = load("bad-json", b"{\"model\":");
+        assert!(e.starts_with("assets/minecraft/items/bow.json: "), "{e}");
+        let e = load("no-model", br#"{"hand_animation_on_swap":false}"#);
+        assert!(e.contains("with a model object"), "{e}");
+        let e = load("model-not-object", br#"{"model":"minecraft:item/bow"}"#);
+        assert!(e.contains("with a model object"), "{e}");
+        let deep = format!("{}{}", "[".repeat(10_000), "]".repeat(10_000));
+        let e = load("deep", deep.as_bytes());
+        assert!(e.contains("recursion limit"), "{e}");
+        let big = format!(r#"{{"model":{{}},"pad":"{}"}}"#, "x".repeat(MAX_ITEM_MODEL));
+        let e = load("big", big.as_bytes());
+        assert!(e.contains("is over 256 KiB"), "{e}");
     }
 
     #[test]

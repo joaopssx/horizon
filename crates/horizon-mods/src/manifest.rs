@@ -52,6 +52,11 @@ pub struct Manifest {
     /// that are on may share one (`content::clash`).
     #[serde(default)]
     pub namespaces: Vec<String>,
+    /// Vanilla items (`minecraft:crossbow`) whose client item definition the
+    /// content replaces with its `assets/minecraft/items/<path>.json`
+    /// (docs/mods.md). No two content mods that are on may list the same one.
+    #[serde(default)]
+    pub item_models: Vec<String>,
     /// The experimental capabilities the mod opts into (`["ui"]`): each one
     /// it lists in `capabilities` must be named here too, since it may change
     /// in any release (docs/api/stability.md). One no longer experimental is
@@ -292,6 +297,35 @@ impl Manifest {
                 return Err(format!("{MANIFEST}: namespace {ns} is listed twice"));
             }
         }
+        if !m.item_models.is_empty() && server {
+            return Err(format!(
+                "{MANIFEST}: item_models change how items are drawn, which a server mod never does"
+            ));
+        }
+        if !m.item_models.is_empty() && !m.capabilities.contains(&Capability::Registries) {
+            return Err(format!(
+                "{MANIFEST}: item_models are content, which needs capability registries"
+            ));
+        }
+        for (i, item) in m.item_models.iter().enumerate() {
+            // A vanilla item's id: one file name in assets/minecraft/items/.
+            let path_ok = item.strip_prefix("minecraft:").is_some_and(|p| {
+                !p.is_empty()
+                    && p != "."
+                    && p != ".."
+                    && p.bytes().all(|b| {
+                        b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b)
+                    })
+            });
+            if !path_ok {
+                return Err(format!(
+                    "{MANIFEST}: item_models entry {item:?} is not a vanilla item id (minecraft:<name>)"
+                ));
+            }
+            if m.item_models[..i].contains(item) {
+                return Err(format!("{MANIFEST}: item_models lists {item} twice"));
+            }
+        }
         Ok(m)
     }
     /// The namespaces the mod's content owns: its id, then `namespaces`.
@@ -510,6 +544,33 @@ capabilities = ["game-read", "hud"]
         assert!(with("\"\"").unwrap_err().contains("is not"));
         let code = format!("{EXAMPLE}namespaces = [\"kaisyn\"]\n");
         assert!(Manifest::parse(&code).unwrap_err().contains("registries"));
+    }
+
+    #[test]
+    fn checks_item_models() {
+        let content = "id = \"archer\"\nname = \"A\"\nversion = \"1\"\napi = \"0.2\"\ncapabilities = [\"registries\"]\n";
+        let with = |list: &str| Manifest::parse(&format!("{content}item_models = [{list}]\n"));
+        let m = with("\"minecraft:crossbow\", \"minecraft:bow\"").unwrap();
+        assert_eq!(m.item_models, ["minecraft:crossbow", "minecraft:bow"]);
+        assert!(Manifest::parse(content).unwrap().item_models.is_empty());
+        for bad in [
+            "crossbow",
+            "archer:crossbow",
+            "minecraft:",
+            "minecraft:..",
+            "minecraft:../../x",
+            "minecraft:a/b",
+            "minecraft:Crossbow",
+        ] {
+            let e = with(&format!("\"{bad}\"")).unwrap_err();
+            assert!(e.contains("not a vanilla item id"), "{bad}: {e}");
+        }
+        let twice = with("\"minecraft:bow\", \"minecraft:bow\"").unwrap_err();
+        assert!(twice.contains("twice"), "{twice}");
+        let code = format!("{EXAMPLE}item_models = [\"minecraft:bow\"]\n");
+        assert!(Manifest::parse(&code).unwrap_err().contains("registries"));
+        let server = "id = \"w\"\nname = \"W\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\nitem_models = [\"minecraft:bow\"]\n";
+        assert!(Manifest::parse(server).unwrap_err().contains("server mod"));
     }
 
     #[test]
