@@ -335,6 +335,60 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The example mod in tools/fixtures replaces the bow's definition: it
+    /// builds and passes the registry's checks, and an archive whose file
+    /// climbs out of the listed item's place is refused.
+    #[test]
+    fn an_item_model_mod_builds_and_checks() {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/fixtures/item_model_hmod");
+        let dir =
+            std::env::temp_dir().join(format!("horizon-mod-item-model-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("archer_example");
+        for name in [
+            MANIFEST,
+            "assets/minecraft/items/bow.json",
+            "assets/archer_example/models/item/drawn_target.json",
+            "assets/archer_example/textures/item/drawn_target.png",
+        ] {
+            std::fs::create_dir_all(path.join(name).parent().unwrap()).unwrap();
+            std::fs::copy(fixture.join(name), path.join(name)).unwrap();
+        }
+        let hmod = build_in(&path).unwrap();
+        let report = check::check(&hmod, check::kind_of(&hmod).unwrap(), None, None).unwrap();
+        assert!(
+            report.text().contains("no code: content only"),
+            "{}",
+            report.text()
+        );
+        let package = Package::read(&hmod).unwrap();
+        assert_eq!(package.manifest.item_models, ["minecraft:bow"]);
+
+        let manifest = std::fs::read_to_string(path.join(MANIFEST)).unwrap();
+        let definition = std::fs::read(path.join("assets/minecraft/items/bow.json")).unwrap();
+        let hostile = dir.join("hostile.hmod");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&hostile).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, bytes) in [
+            (MANIFEST, manifest.as_bytes()),
+            ("assets/minecraft/items/bow.json", &definition[..]),
+            (
+                "assets/minecraft/items/../../../escape.json",
+                &definition[..],
+            ),
+        ] {
+            zip.start_file(name, options).unwrap();
+            std::io::Write::write_all(&mut zip, bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        let e = check::check(&hostile, check::kind_of(&hostile).unwrap(), None, None)
+            .map(|r| r.text())
+            .unwrap_err();
+        assert!(e.contains("is not a plain assets/ or data/ path"), "{e}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn the_native_template_packs_into_an_hnmod_the_registry_accepts() {
         use std::io::Write;

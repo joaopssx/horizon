@@ -1,0 +1,8 @@
+id = "archer_example"
+name = "Archer Example"
+version = "0.1.0"
+description = "Original content fixture: a drawn bow shows a target instead of its pull stages"
+api = "0.2"
+side = "client"
+capabilities = ["registries"]
+item_models = ["minecraft:bow"]

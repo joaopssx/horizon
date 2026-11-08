@@ -5138,6 +5138,12 @@ fn item_models_need_a_vanilla_definition_and_must_decode() {
     let _ = fs::remove_dir_all(&scratch);
     let base = scratch.join("base");
     item_model_base(&base);
+    // The example mod players can install (tools/fixtures/item_model_hmod) decodes.
+    let example =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/fixtures/item_model_hmod");
+    let package = horizon_mods::Package::read(&example).unwrap();
+    let content = Content::read(&example, &package.manifest).unwrap();
+    check_item_models(&base, &content).unwrap();
     let typo = item_model_mod(&scratch.join("typo"), "typo", &["crosbow"]);
     let e = check_item_models(&base, &typo.content).unwrap_err();
     assert_eq!(
