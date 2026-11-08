@@ -510,8 +510,8 @@ Tags merge as a data pack's do. Every mod's file for one tag (vanilla's `data/mi
 `"replace": true` first drops what came before it, vanilla's entries and the earlier mods', and the mods after it
 still add theirs, as a higher data pack does. Since the result depends on load order, the game says so in the log:
 "mod towns replaces data/minecraft/tags/worldgen/biome/has_structure/village_plains.json: vanilla's entries and those
-of adds are left out, ...". Tags are the only `minecraft` files a mod may hold: its other content stays in its own
-namespaces.
+of adds are left out, ...". Tags, atlases and the item definitions in `item_models` are the only `minecraft` files a
+mod may hold: its other content stays in its own namespaces.
 
 Damage types use vanilla files at `data/<namespace>/damage_type/<name>.json`,
 with required `message_id`, `scaling` and `exhaustion` fields, plus optional
