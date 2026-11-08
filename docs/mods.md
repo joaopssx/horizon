@@ -91,6 +91,7 @@ api = "0.2"                  # content mods
 side = "both"
 capabilities = ["registries"]
 namespaces = []              # optional: more namespaces the mod's files use (below)
+item_models = []             # optional: vanilla items whose model definition it replaces (below)
 ```
 
 Unknown keys are refused, so a typo is an error, not a silently ignored permission.
@@ -451,8 +452,9 @@ result or `results`.
 The fence: files go in the mod's own namespaces (`assets/<id>/`,
 `data/<id>/`, and those its manifest lists), plus additions to vanilla tags
 (`data/minecraft/tags/`), to the convention tags NeoForge and Fabric mods
-share (`data/c/tags/`), and sources added to vanilla's atlases
-(`assets/minecraft/atlases/`), which follow vanilla's own as a reload appends them.
+share (`data/c/tags/`), sources added to vanilla's atlases
+(`assets/minecraft/atlases/`), which follow vanilla's own as a reload appends them,
+and the vanilla item definitions its manifest lists in `item_models` (below).
 Templates and `sounds` name vanilla blocks; unknown keys are refused.
 
 Some Java mods ship their files under other names than their mod id (Towns and Towers, mod id `t_and_t`, under
@@ -475,6 +477,33 @@ MiB each and 512 MiB in all. A mod whose content is refused is left out, with th
 this content into its block and item tables (`horizon_client::mod_content`, [modpacks.md](modpacks.md)). A tag entry
 naming an id nobody registers (a block a port left out, another mod's item) is dropped, so the rest of the tag still
 loads; vanilla would drop the whole tag.
+
+#### Replacing a vanilla item's model
+
+A mod can change how a vanilla item looks with its own client item definition (26.3's `assets/<ns>/items/<item>.json`:
+`select`, `condition`, `range_dispatch` and the rest), so a crossbow can show what it is loaded with. Its manifest lists
+the items, and the mod holds one `assets/minecraft/items/<name>.json` for each, and no other `assets/minecraft/` file:
+
+```toml
+side = "client"
+item_models = ["minecraft:crossbow"]
+```
+
+The definition's models and textures go in the mod's own namespace (`assets/<id>/models/`, `assets/<id>/textures/`).
+What a definition can choose by: `minecraft:charge_type` (`none`, `arrow`, `rocket`), `minecraft:crossbow/pull`,
+`minecraft:using_item`, and `minecraft:component`, either as a `select` on `minecraft:charged_projectiles` (each case a
+whole list of loaded projectiles, so a spectral arrow and Multishot's three arrows are cases of their own) or as a
+`condition` with an `enchantments` predicate. No property gives the loaded arrow's potion colour: a `minecraft:potion`
+tint reads the crossbow's own stack, so a tipped tip is one case per potion with a `minecraft:constant` tint.
+
+A listed item must be a vanilla item with a definition, and its file a definition the game decodes, at most 256 KiB; a
+mod that fails either is left out with the reason in the log. Two mods that are on may not replace the same item: the
+first in load order loads, and the other stays out with "mods A and B both replace the item model of
+minecraft:crossbow; turn one of them off". A resource pack the player turns on still wins over a mod's definition, as
+it does over vanilla's. Turned off, the mod's definition is gone and vanilla's is back. A server mod lists none.
+
+`tools/fixtures/item_model_hmod` is a small example: a drawn bow shows a target, an original texture
+(`cargo horizon-mod run` in a copy of that folder).
 
 Tags merge as a data pack's do. Every mod's file for one tag (vanilla's `data/minecraft/tags/`, the convention
 `data/c/tags/`, or another mod's) adds its values after vanilla's and the mods' before it, in load order. A file with

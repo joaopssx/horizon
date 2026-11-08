@@ -1,6 +1,6 @@
 # Content mods that replace a vanilla item's model definition
 
-Status: proposal. A content mod may ship `assets/minecraft/items/<item>.json` for the vanilla items its manifest
+Status: implemented (docs/mods.md, "Replacing a vanilla item's model"). A content mod may ship `assets/minecraft/items/<item>.json` for the vanilla items its manifest
 lists, so a crossbow can show the arrow it is loaded with. Data only: no code, no new file, network or clock access.
 
 ## What exists already (reused, not rebuilt)
