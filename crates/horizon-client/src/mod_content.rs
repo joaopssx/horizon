@@ -778,7 +778,41 @@ pub fn accept_mod(
     {
         return Err(error.into());
     }
+    let replaced = (
+        candidate.id.as_str(),
+        candidate.content.item_models.as_slice(),
+    );
+    if let Some(error) = mods.iter().find_map(|c| {
+        horizon_mods::content::item_model_clash((&c.id, &c.content.item_models), replaced)
+    }) {
+        return Err(error.into());
+    }
     mods.push(candidate);
+    Ok(())
+}
+
+/// A mod's replacements of vanilla client item definitions (`item_models`),
+/// checked against the resources they go over: each replaces a definition
+/// `base` has, and decodes as the game decodes one (`ClientItem`), so a
+/// broken file refuses its mod instead of leaving the item undrawn.
+pub fn check_item_models(base: &Path, content: &horizon_mods::Content) -> Result<()> {
+    if content.item_models.is_empty() {
+        return Ok(());
+    }
+    let mut reader = content.reader()?;
+    for item in &content.item_models {
+        let path = item.strip_prefix("minecraft:").unwrap_or(item);
+        let name = format!("assets/minecraft/items/{path}.json");
+        if horizon_core::prepared_files::read(&base.join(&name)).is_err() {
+            return Err(
+                format!("item_models lists {item}, which has no vanilla item definition").into(),
+            );
+        }
+        let bytes = reader.read(&name)?;
+        let text = std::str::from_utf8(&bytes).map_err(|e| format!("{name}: {e}"))?;
+        horizon_assets::item_model::ClientItem::from_json(text)
+            .map_err(|e| format!("{name}: {e}"))?;
+    }
     Ok(())
 }
 
@@ -2545,6 +2579,14 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
                 (a.id.as_str(), a.content.namespaces.as_slice()),
             );
             if let Some(e) = horizon_mods::content::clash(b, a) {
+                return Err(e.into());
+            }
+        }
+        for b in &mods[..i] {
+            if let Some(e) = horizon_mods::content::item_model_clash(
+                (&b.id, &b.content.item_models),
+                (&a.id, &a.content.item_models),
+            ) {
                 return Err(e.into());
             }
         }

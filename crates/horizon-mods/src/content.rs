@@ -655,6 +655,17 @@ pub fn clash(a: (&str, &[String]), b: (&str, &[String])) -> Option<String> {
     ))
 }
 
+/// Why two content mods cannot be on together: a vanilla item whose
+/// definition both replace, where load order alone would pick the one drawn.
+/// `a` and `b` are (mod id, its `item_models`).
+pub fn item_model_clash(a: (&str, &[String]), b: (&str, &[String])) -> Option<String> {
+    let shared = a.1.iter().find(|item| b.1.contains(item))?;
+    Some(format!(
+        "mods {} and {} both replace the item model of {shared}; turn one of them off",
+        a.0, b.0
+    ))
+}
+
 impl Content {
     /// The content of the mod at `path` (a `.hmod` or a mod folder).
     pub fn read(path: &Path, manifest: &Manifest) -> Result<Content, String> {

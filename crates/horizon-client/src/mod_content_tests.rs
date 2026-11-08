@@ -5042,3 +5042,168 @@ fn worldgen_entry_reads_both_feature_folders() {
         None
     );
 }
+
+/// A content mod listing `item_models`, its definition for each, and one model of its own.
+fn item_model_mod(dir: &Path, id: &str, items: &[&str]) -> ContentMod {
+    let list: Vec<String> = items.iter().map(|i| format!("\"minecraft:{i}\"")).collect();
+    let toml = format!("{}item_models = [{}]\n", manifest(id, ""), list.join(", "));
+    let definition =
+        format!(r#"{{"model":{{"type":"minecraft:model","model":"{id}:item/loaded"}}}}"#);
+    let mut files = vec![
+        ("horizon-mod.toml".to_owned(), toml),
+        (
+            format!("assets/{id}/models/item/loaded.json"),
+            "{}".to_owned(),
+        ),
+    ];
+    for item in items {
+        files.push((
+            format!("assets/minecraft/items/{item}.json"),
+            definition.clone(),
+        ));
+    }
+    let files: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(n, t)| (n.as_str(), t.as_str()))
+        .collect();
+    folder_mod(dir, &files)
+}
+
+/// A base root with two vanilla-shaped item definitions (written here, not vanilla's).
+fn item_model_base(base: &Path) -> (Vec<u8>, Vec<u8>) {
+    small_base(base);
+    // The tables a content root's plan reads, for one block with one state.
+    for (name, text) in [
+        (
+            "facts.json",
+            r#"{"states":[["minecraft:test",false,false,"",{"id":"minecraft:test"}]],"defaults":{"minecraft:test":0}}"#,
+        ),
+        (
+            "gameplay-facts.json",
+            r#"{"states":[{"item":"minecraft:test"}]}"#,
+        ),
+        ("items.json", r#"{"minecraft:test":{}}"#),
+        (
+            "registries.json",
+            r#"{"minecraft:item":{"entries":{"minecraft:test":{"protocol_id":0}}},"minecraft:block":{"entries":{"minecraft:test":{"protocol_id":0}}}}"#,
+        ),
+    ] {
+        fs::write(base.join(name), text).unwrap();
+    }
+    let crossbow = br#"{"model":{"type":"minecraft:model","model":"minecraft:item/crossbow"}}"#;
+    let bow = br#"{"model":{"type":"minecraft:model","model":"minecraft:item/bow"}}"#;
+    fs::create_dir_all(base.join("assets/minecraft/items")).unwrap();
+    fs::write(base.join("assets/minecraft/items/crossbow.json"), crossbow).unwrap();
+    fs::write(base.join("assets/minecraft/items/bow.json"), bow).unwrap();
+    (crossbow.to_vec(), bow.to_vec())
+}
+
+/// A listed item's definition is the mod's in the root, every other one stays
+/// the base's byte for byte, and without the mod the root is the base itself.
+#[test]
+fn a_mods_item_model_replaces_only_that_vanilla_definition() {
+    let scratch =
+        std::env::temp_dir().join(format!("horizon-mod-item-model-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    let (_, bow) = item_model_base(&base);
+    let m = item_model_mod(&scratch.join("archer"), "archer", &["crossbow"]);
+    check_item_models(&base, &m.content).unwrap();
+    let root = scratch.join("root");
+    build(&base, std::slice::from_ref(&m), &root).unwrap();
+    let mods_own = fs::read(scratch.join("archer/assets/minecraft/items/crossbow.json")).unwrap();
+    assert_eq!(
+        fs::read(root.join("assets/minecraft/items/crossbow.json")).unwrap(),
+        mods_own
+    );
+    assert_eq!(
+        fs::read(root.join("assets/minecraft/items/bow.json")).unwrap(),
+        bow
+    );
+    assert!(root.join("assets/archer/models/item/loaded.json").exists());
+    // Off: no mod, no overlay, vanilla's files.
+    assert_eq!(
+        resource_root(&base, &[], &scratch.join("cache")).unwrap(),
+        base
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+/// A replacement for an item vanilla has no definition of, or one that does
+/// not decode as an item definition, refuses its mod with the reason.
+#[test]
+fn item_models_need_a_vanilla_definition_and_must_decode() {
+    let scratch =
+        std::env::temp_dir().join(format!("horizon-mod-item-model-bad-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    item_model_base(&base);
+    let typo = item_model_mod(&scratch.join("typo"), "typo", &["crosbow"]);
+    let e = check_item_models(&base, &typo.content).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "item_models lists minecraft:crosbow, which has no vanilla item definition"
+    );
+    let broken = folder_mod(
+        &scratch.join("broken"),
+        &[
+            (
+                "horizon-mod.toml",
+                &format!(
+                    "{}item_models = [\"minecraft:bow\"]\n",
+                    manifest("broken", "")
+                ),
+            ),
+            (
+                "assets/minecraft/items/bow.json",
+                r#"{"model":{"type":"minecraft:no_such_model"}}"#,
+            ),
+        ],
+    );
+    let e = check_item_models(&base, &broken.content)
+        .unwrap_err()
+        .to_string();
+    assert!(e.starts_with("assets/minecraft/items/bow.json: "), "{e}");
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+/// Two mods replacing one item's definition: the first in load order stays,
+/// the other is refused naming both, and a root is never built with both.
+#[test]
+fn mods_replacing_one_item_model_are_refused() {
+    let scratch = std::env::temp_dir().join(format!(
+        "horizon-mod-item-model-clash-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&scratch);
+    let first = item_model_mod(&scratch.join("archer"), "archer", &["crossbow"]);
+    let second = item_model_mod(&scratch.join("quiver"), "quiver", &["bow", "crossbow"]);
+    let other = item_model_mod(&scratch.join("longbow"), "longbow", &["bow"]);
+    let mut mods = Vec::new();
+    let known = BTreeSet::new();
+    accept_mod(&mut mods, first, &known).unwrap();
+    let e = accept_mod(&mut mods, second, &known).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "mods archer and quiver both replace the item model of minecraft:crossbow; turn one of them off"
+    );
+    accept_mod(&mut mods, other, &known).unwrap();
+    assert_eq!(
+        mods.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+        ["archer", "longbow"]
+    );
+    let first = item_model_mod(&scratch.join("archer"), "archer", &["crossbow"]);
+    let second = item_model_mod(&scratch.join("quiver"), "quiver", &["bow", "crossbow"]);
+    let e = build(
+        &scratch.join("no-base"),
+        &[first, second],
+        &scratch.join("root"),
+    )
+    .unwrap_err();
+    assert!(
+        e.to_string()
+            .starts_with("mods archer and quiver both replace"),
+        "{e}"
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}

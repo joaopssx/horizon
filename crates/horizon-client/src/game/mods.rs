@@ -144,6 +144,10 @@ pub(super) fn content_root(
                 }
             },
         };
+        if let Err(e) = mod_content::check_item_models(root, &content) {
+            log::warn!("Horizon: mod {} content not loaded: {e}", m.id);
+            continue;
+        }
         let candidate = ContentMod {
             id: m.id.clone(),
             content,
